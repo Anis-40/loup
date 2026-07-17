@@ -1,17 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/game_state.dart';
 import '../models/player.dart';
 import '../models/role.dart';
-import '../../data/network/websocket_server.dart';
-import '../../data/network/websocket_client.dart';
+import '../../data/network/tcp_server.dart';
+import '../../data/network/tcp_client.dart';
 import '../../data/network/discovery_service.dart';
 import '../../../../core/constants/app_constants.dart';
 import 'role_config_provider.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ─── Session Info ─────────────────────────────────────────────────────────────
-final isHostProvider       = StateProvider<bool>((ref) => false);
+final isHostProvider        = StateProvider<bool>((ref) => false);
 final currentPlayerProvider = StateProvider<Player?>((ref) => null);
 
 // ─── Game State ───────────────────────────────────────────────────────────────
@@ -28,25 +28,26 @@ class GameNotifier extends StateNotifier<GameState> {
 
   // ─── HOST: Create Room ──────────────────────────────────────────────────────
   Future<void> createRoom(String roomName, Player host) async {
-    final ip = await DiscoveryService.getLocalIp();
+    await _server?.stop();
+    _server = null;
 
-    state = state.copyWith(roomName: roomName, hostIp: ip);
-    state = state.copyWith(players: [host]);
+    final ip = await DiscoveryService.getLocalIp();
+    state = state.copyWith(roomName: roomName, hostIp: ip, players: [host]);
 
     _server = LocalGameServer();
     _server!.onMessage = _handleClientMessage;
-    await _server!.start();
+    await _server!.start(roomName);
 
     if (ip != '127.0.0.1') {
       await _discovery.startBroadcasting(roomName);
     }
   }
 
-  void _handleClientMessage(WebSocketChannel ws, Map<String, dynamic> data) {
+  void _handleClientMessage(Socket socket, Map<String, dynamic> data) {
     final type = data['type'] as String?;
     if (type == 'JOIN') {
       final player = Player.fromJson(data['player']);
-      _server!.setPlayerIdForChannel(ws, player.id);
+      _server!.setPlayerIdForSocket(socket, player.id);
       _addPlayer(player);
       _broadcastState();
     } else if (type == 'VOTE') {
@@ -58,11 +59,11 @@ class GameNotifier extends StateNotifier<GameState> {
 
   // ─── PLAYER: Join Room ──────────────────────────────────────────────────────
   Future<bool> joinRoom(String ip, Player player) async {
+    _client?.dispose();
     _client = GameClient(
       onMessage: (data) {
         if (data['type'] == 'STATE') {
           final newState = GameState.fromJson(data['state']);
-          // Inject the current player's role privately
           final me = newState.players.firstWhere(
             (p) => p.id == player.id, orElse: () => player);
           final myRole = data['myRole'] != null
@@ -111,7 +112,7 @@ class GameNotifier extends StateNotifier<GameState> {
     return players;
   }
 
-  // ─── HOST: Phase Control ────────────────────────────────────────────────────
+  // ─── Phase Control ───────────────────────────────────────────────────────────
   void startMayorElection() {
     state = state.copyWith(phase: GamePhase.mayorElection, currentVotes: {});
     _broadcastState();
@@ -120,14 +121,11 @@ class GameNotifier extends StateNotifier<GameState> {
   void resolveMayorElection() {
     final votes = state.currentVotes;
     if (votes.isEmpty) return;
-
     final tally = <String, int>{};
     for (final t in votes.values) tally[t] = (tally[t] ?? 0) + 1;
     final winnerId = tally.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
-
     final players = state.players.map((p) =>
         p.id == winnerId ? p.copyWith(isMayor: true) : p.copyWith(isMayor: false)).toList();
-
     state = state.copyWith(players: players, mayorId: winnerId, phase: GamePhase.day);
     _broadcastState();
   }
@@ -138,7 +136,7 @@ class GameNotifier extends StateNotifier<GameState> {
       currentVotes: {},
       nightVictimId: null,
       protectedPlayerId: null,
-      seerRevealId: null
+      seerRevealId: null,
     );
     _broadcastState();
   }
@@ -146,17 +144,13 @@ class GameNotifier extends StateNotifier<GameState> {
   void goToDay() {
     var players = List<Player>.from(state.players);
     String? deadId;
-
-    // Apply night kill if not protected
     if (state.nightVictimId != null && state.nightVictimId != state.protectedPlayerId) {
       deadId = state.nightVictimId;
     }
-
     if (deadId != null) {
       players = players.map((p) =>
         p.id == deadId ? p.copyWith(isAlive: false, roleRevealed: true) : p).toList();
     }
-
     state = state.copyWith(phase: GamePhase.day, players: players);
     _checkWinCondition();
     _checkMayorDeath(deadId);
@@ -164,11 +158,7 @@ class GameNotifier extends StateNotifier<GameState> {
   }
 
   void _checkMayorDeath(String? deadId) {
-    if (deadId == state.mayorId) {
-       // If mayor died, we need a new election
-       state = state.copyWith(mayorId: null);
-       // We can trigger mayor election manually by narrator or auto
-    }
+    if (deadId == state.mayorId) state = state.copyWith(mayorId: null);
   }
 
   void startVoting() {
@@ -180,21 +170,14 @@ class GameNotifier extends StateNotifier<GameState> {
     final votes = state.currentVotes;
     if (votes.isEmpty) { goToNight(); return; }
 
-    // Count votes with Mayor weight (2 votes)
     final tally = <String, double>{};
     for (final entry in votes.entries) {
-      final voterId = entry.key;
-      final targetId = entry.value;
-      final isMayor = state.players.any((p) => p.id == voterId && p.isMayor);
-      tally[targetId] = (tally[targetId] ?? 0) + (isMayor ? 2.0 : 1.0);
+      final isMayor = state.players.any((p) => p.id == entry.key && p.isMayor);
+      tally[entry.value] = (tally[entry.value] ?? 0) + (isMayor ? 2.0 : 1.0);
     }
-
-    final eliminated = tally.entries
-        .reduce((a, b) => a.value >= b.value ? a : b).key;
-
+    final eliminated = tally.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
     var players = state.players.map((p) =>
         p.id == eliminated ? p.copyWith(isAlive: false, roleRevealed: true) : p).toList();
-
     state = state.copyWith(players: players, round: state.round + 1);
     _checkWinCondition();
     _checkMayorDeath(eliminated);
@@ -202,7 +185,6 @@ class GameNotifier extends StateNotifier<GameState> {
     _broadcastState();
   }
 
-  // ─── HOST: Narrator Tools ───────────────────────────────────────────────────
   void eliminatePlayer(String playerId) {
     final players = state.players.map((p) =>
         p.id == playerId ? p.copyWith(isAlive: false, roleRevealed: true) : p).toList();
@@ -218,7 +200,6 @@ class GameNotifier extends StateNotifier<GameState> {
     _broadcastState();
   }
 
-  // ─── Night Actions ──────────────────────────────────────────────────────────
   void _handleNightAction(Map<String, dynamic> data) {
     final action = data['action'] as String;
     if (action == 'WOLF_KILL') {
@@ -239,7 +220,6 @@ class GameNotifier extends StateNotifier<GameState> {
     }
   }
 
-  // ─── PLAYER: Send actions ───────────────────────────────────────────────────
   void sendVote(String voterId, String targetId) {
     if (_ref.read(isHostProvider)) {
       _recordVote(voterId, targetId);
@@ -258,7 +238,6 @@ class GameNotifier extends StateNotifier<GameState> {
     }
   }
 
-  // ─── Helpers ────────────────────────────────────────────────────────────────
   void _addPlayer(Player player) {
     if (!state.players.any((p) => p.id == player.id)) {
       state = state.copyWith(players: [...state.players, player]);
@@ -266,8 +245,7 @@ class GameNotifier extends StateNotifier<GameState> {
   }
 
   void _removePlayer(String id) {
-    state = state.copyWith(
-        players: state.players.where((p) => p.id != id).toList());
+    state = state.copyWith(players: state.players.where((p) => p.id != id).toList());
   }
 
   void _recordVote(String voterId, String targetId) {
