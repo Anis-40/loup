@@ -4,9 +4,24 @@ import 'package:go_router/go_router.dart';
 import 'package:easy_localization/easy_localization.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/glowing_button.dart';
+import '../../../../core/utils/updater.dart';
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  @override
+  void initState() {
+    super.initState();
+    // نتحقق من التحديثات بمجرد فتح الشاشة الرئيسية
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AppUpdater.checkForUpdates(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
