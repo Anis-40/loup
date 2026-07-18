@@ -10,14 +10,14 @@ workflows:
         script: |
           set -ex
           flutter pub get
+          # 1. بناء نسخة هاتف وهمي لتوليد ملفات الحزم (Podfile)
+          flutter build ios --debug --simulator
+          # 2. الآن ندخل لمجلد الآيفون ونبني النسخة الحقيقية بدون قيود
           cd ios
-          pod install
-          # تدمير قيود الحماية بالكامل
           xcodebuild clean build -workspace Runner.xcworkspace -scheme Runner -configuration Release -sdk iphoneos -derivedDataPath ../build/ios_derived CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
           cd ../build
           mkdir -p Payload
           find ios_derived/Build/Products -name "*.app" -exec cp -R {} Payload/ \;
-          # التأكد من أن اللعبة موجودة فعلا
           if [ -z "ls -A Payload" ]; then
              echo "ERROR: Payload is empty, build failed."
              exit 1
