@@ -6,18 +6,22 @@ workflows:
       flutter: default
       xcode: latest
     scripts:
-      - name: Xcode Hack Build 🛠️
+      - name: Xcode Proper Hack Build 🛠️
         script: |
-          set -x
+          set -ex
           flutter pub get
-          # جعل Flutter يجهز الملفات فقط ونتجاهل خطأه المقصود
-          flutter build ios --release --no-codesign || true
           cd ios
-          # إجبار النظام على بناء التطبيق بالقوة بدون حساب مطور
-          xcodebuild build -workspace Runner.xcworkspace -scheme Runner -configuration Release -sdk iphoneos -derivedDataPath ../build/ios_derived CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+          pod install
+          # تدمير قيود الحماية بالكامل
+          xcodebuild clean build -workspace Runner.xcworkspace -scheme Runner -configuration Release -sdk iphoneos -derivedDataPath ../build/ios_derived CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
           cd ../build
           mkdir -p Payload
-          mv ios_derived/Build/Products/Release-iphoneos/Runner.app Payload/
+          find ios_derived/Build/Products -name "*.app" -exec cp -R {} Payload/ \;
+          # التأكد من أن اللعبة موجودة فعلا
+          if [ -z "ls -A Payload" ]; then
+             echo "ERROR: Payload is empty, build failed."
+             exit 1
+          fi
           zip -qr app.ipa Payload
     artifacts:
       - build/app.ipa
