@@ -1,0 +1,19 @@
+workflows:
+  ios-unsigned:
+    name: Build Unsigned iOS (For AltStore)
+    instance_type: mac_mini_m2
+    environment:
+      flutter: default
+      xcode: latest
+    scripts:
+      - name: Install dependencies
+        script: flutter pub get
+      - name: Build unsigned iOS app 🛠️
+        script: |
+          flutter build ios --release --no-codesign
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          mv Runner.app Payload/
+          zip -qr app.ipa Payload
+    artifacts:
+      - build/ios/iphoneos/app.ipa
