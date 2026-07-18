@@ -6,22 +6,20 @@ workflows:
       flutter: default
       xcode: latest
     scripts:
-      - name: Xcode Proper Hack Build 🛠️
+      - name: The Ultimate Xcode Hack 🛠️
         script: |
           set -ex
           flutter pub get
-          # 1. بناء نسخة هاتف وهمي لتوليد ملفات الحزم (Podfile)
-          flutter build ios --debug --simulator
-          # 2. الآن ندخل لمجلد الآيفون ونبني النسخة الحقيقية بدون قيود
-          cd ios
-          xcodebuild clean build -workspace Runner.xcworkspace -scheme Runner -configuration Release -sdk iphoneos -derivedDataPath ../build/ios_derived CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-          cd ../build
+          # 1. اختراق ملفات إعدادات آبل لإلغاء التوقيع بشكل جذري
+          echo "CODE_SIGNING_REQUIRED = NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGNING_ALLOWED = NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGN_IDENTITY = " >> ios/Flutter/Release.xcconfig
+          # 2. بناء التطبيق بسلام تام بعد الاختراق
+          flutter build ios --release --no-codesign
+          # 3. التجهيز والضغط
+          cd build/ios/iphoneos
           mkdir -p Payload
-          find ios_derived/Build/Products -name "*.app" -exec cp -R {} Payload/ \;
-          if [ -z "ls -A Payload" ]; then
-             echo "ERROR: Payload is empty, build failed."
-             exit 1
-          fi
+          mv Runner.app Payload/
           zip -qr app.ipa Payload
     artifacts:
-      - build/app.ipa
+      - build/ios/iphoneos/app.ipa
